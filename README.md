@@ -3,7 +3,7 @@
 > ## Instructions to replicate this project on your local computer
 <ol> 
     <li>
-        Install Go in your computer if not installed, by following instructions on their official website <a href="https://go.dev/doc/install">Python 3 Website</a>
+        Install Go in your computer if not installed, by following instructions on their official website download page <a href="https://go.dev/doc/install"> Download Go</a>
     </li>
     <li>
         Change your directory and go into the <b>src</b> folder of the project in your terminal
