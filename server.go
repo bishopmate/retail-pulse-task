@@ -73,8 +73,6 @@ type Result struct {
 	JobError  string `json:"job_error"`
 }
 
-var nextJobID int = 1
-
 func justDoIt(job Job, jobsCompleted *map[string]JobCompleted, jobsFailed *map[string]JobFailed, stores *map[string]Store) {
 	var jobErrors []JobError
 	for _, visit := range job.Payload.Visits {
@@ -133,7 +131,7 @@ func justDoIt(job Job, jobsCompleted *map[string]JobCompleted, jobsFailed *map[s
 		(*jobsFailed)[jobid] = jobFailed
 	}
 }
-func jobHandlerWrapper(stores *map[string]Store, jobs *map[string]Job, jobsCompleted *map[string]JobCompleted, jobsFailed *map[string]JobFailed) http.HandlerFunc {
+func jobHandlerWrapper(stores *map[string]Store, jobs *map[string]Job, jobsCompleted *map[string]JobCompleted, jobsFailed *map[string]JobFailed, nextJobID *int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
@@ -165,7 +163,7 @@ func jobHandlerWrapper(stores *map[string]Store, jobs *map[string]Job, jobsCompl
 
 		// Now assign a job and start a goroutine to process the job
 		var job Job
-		job.JobID = strconv.Itoa(nextJobID)
+		job.JobID = strconv.Itoa(*nextJobID)
 		job.Status = "ongoing"
 		job.Payload = payload
 		(*jobs)[job.JobID] = job
@@ -175,9 +173,9 @@ func jobHandlerWrapper(stores *map[string]Store, jobs *map[string]Job, jobsCompl
 		// send back success of job registration
 
 		var success Success
-		success.JobID = strconv.Itoa(nextJobID)
+		success.JobID = strconv.Itoa(*nextJobID)
 		json.NewEncoder(w).Encode(success)
-		nextJobID++
+		(*nextJobID)++
 	}
 }
 func jobInfoHandlerWrapper(jobs *map[string]Job, jobsCompleted *map[string]JobCompleted, jobsFailed *map[string]JobFailed) http.HandlerFunc {
@@ -217,7 +215,7 @@ func main() {
 	var jobs = make(map[string]Job)
 	var jobsCompleted = make(map[string]JobCompleted)
 	var jobsFailed = make(map[string]JobFailed)
-
+	nextJobID := 1
 	// loading store data
 	csvFile, err := os.Open("StoreMasterAssignment.csv")
 
@@ -244,7 +242,7 @@ func main() {
 	// store data loaded
 
 	// Route Handlers
-	router.HandleFunc("/api/submit", jobHandlerWrapper(&stores, &jobs, &jobsCompleted, &jobsFailed)).Methods("POST")
+	router.HandleFunc("/api/submit", jobHandlerWrapper(&stores, &jobs, &jobsCompleted, &jobsFailed, &nextJobID)).Methods("POST")
 	router.HandleFunc("/api/status", jobInfoHandlerWrapper(&jobs, &jobsCompleted, &jobsFailed)).Methods("GET")
 
 	log.Fatal(http.ListenAndServe(":8000", router))
