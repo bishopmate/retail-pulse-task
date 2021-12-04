@@ -68,10 +68,6 @@ type JobOngoing struct {
 	Status string `json:"status"`
 	JobID  string `json:"job_id"`
 }
-type Result struct {
-	Perimeter string `json:"perimeter"`
-	JobError  string `json:"job_error"`
-}
 
 func justDoIt(job Job, jobsCompleted *map[string]JobCompleted, jobsFailed *map[string]JobFailed, stores *map[string]Store) {
 	var jobErrors []JobError
