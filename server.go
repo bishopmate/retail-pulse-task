@@ -3,15 +3,18 @@ package main
 import (
 	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
+
 	"log"
 	"math/rand"
-	"strconv"
-	"time"
-
-	"fmt"
 	"net/http"
 	"os"
+	"strconv"
+	"time"
 
 	"github.com/gorilla/mux"
 )
@@ -52,9 +55,9 @@ type JobCompleted struct {
 	JobID  string `json:"job_id"`
 }
 type JobFailed struct {
-	Status   string     `json:"status"`
-	JobID    string     `json:"job_id"`
-	JobError []JobError `json:"error"`
+	Status    string     `json:"status"`
+	JobID     string     `json:"job_id"`
+	JobErrors []JobError `json:"error"`
 }
 
 type JobError struct {
@@ -65,15 +68,79 @@ type JobOngoing struct {
 	Status string `json:"status"`
 	JobID  string `json:"job_id"`
 }
+type Result struct {
+	Perimeter string `json:"perimeter"`
+	JobError  string `json:"job_error"`
+}
 
 var nextJobID int = 1
 
-func jobHandlerWrapper(stores []Store, jobs *map[string]Job) http.HandlerFunc {
+func justDoIt(job Job, jobsCompleted *map[string]JobCompleted, jobsFailed *map[string]JobFailed, stores *map[string]Store) {
+	var jobErrors []JobError
+	for _, visit := range job.Payload.Visits {
+		_, storePresent := (*stores)[visit.StoreID]
+		var joberror JobError
+		joberror.StoreID = visit.StoreID
+
+		if !storePresent {
+			job.Status = "failed"
+			joberror.Error = "Store doesn't exists"
+			jobErrors = append(jobErrors, joberror)
+			continue
+		}
+		for _, imageURL := range visit.ImageURL {
+			resp, err := http.Get(imageURL)
+			if err != nil {
+				job.Status = "failed"
+				joberror.Error = "Unable to Download an Image"
+				jobErrors = append(jobErrors, joberror)
+				continue
+			}
+			defer resp.Body.Close()
+			m, _, err := image.Decode(resp.Body)
+			if err != nil {
+				job.Status = "failed"
+				joberror.Error = "Unable to Decode the Image"
+				jobErrors = append(jobErrors, joberror)
+				continue
+			}
+
+			// calculating perimeter to show some processing and random sleep time as said in assignment
+			g := m.Bounds()
+			height := g.Dy()
+			width := g.Dx()
+			perimeter := 2 * (height + width)
+			perimeter += 0 // does nothing, just to remove the not using variable error
+			// fmt.Println(perimeter)
+			pointSeconds := rand.Intn(3) + 1
+			time.Sleep((time.Second / 10) * time.Duration(pointSeconds))
+		}
+	}
+
+	jobid := job.JobID
+	if job.Status != "failed" {
+		job.Status = "completed"
+		var jobCompleted JobCompleted
+		jobCompleted.Status = "completed"
+		jobCompleted.JobID = job.JobID
+		(*jobsCompleted)[jobid] = jobCompleted
+	} else {
+		job.Status = "failed"
+		var jobFailed JobFailed
+		jobFailed.Status = "failed"
+		jobFailed.JobID = job.JobID
+		jobFailed.JobErrors = jobErrors
+		(*jobsFailed)[jobid] = jobFailed
+	}
+}
+func jobHandlerWrapper(stores *map[string]Store, jobs *map[string]Job, jobsCompleted *map[string]JobCompleted, jobsFailed *map[string]JobFailed) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+
+		// Payload Validation Initiated
 		var payload Payload
 		_ = json.NewDecoder(r.Body).Decode(&payload)
-		// fmt.Println(x)
+
 		var error Error
 		if len(payload.Visits) != payload.Count {
 			error.Error = "count is not equal to the length of the array property visits"
@@ -85,8 +152,6 @@ func jobHandlerWrapper(stores []Store, jobs *map[string]Job) http.HandlerFunc {
 			return
 		}
 
-		// fmt.Printf("%+v\n", payload)
-
 		for _, visit := range payload.Visits {
 
 			if len(visit.ImageURL) == 0 || visit.StoreID == "" || visit.VisitTime == "" {
@@ -96,35 +161,31 @@ func jobHandlerWrapper(stores []Store, jobs *map[string]Job) http.HandlerFunc {
 			}
 
 		}
+		// Payload Validation Complete
 
+		// Now assign a job and start a goroutine to process the job
 		var job Job
 		job.JobID = strconv.Itoa(nextJobID)
 		job.Status = "ongoing"
 		job.Payload = payload
 		(*jobs)[job.JobID] = job
 
+		go justDoIt(job, jobsCompleted, jobsFailed, stores)
+
+		// send back success of job registration
+
 		var success Success
 		success.JobID = strconv.Itoa(nextJobID)
 		json.NewEncoder(w).Encode(success)
 		nextJobID++
-		fmt.Println("confirmed")
 	}
 }
 func jobInfoHandlerWrapper(jobs *map[string]Job, jobsCompleted *map[string]JobCompleted, jobsFailed *map[string]JobFailed) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		queryJobID := r.URL.Query().Get("jobid")
-		jobIDExists := false
-		fmt.Println(jobs)
-		for i, job := range *jobs {
-			fmt.Println(i)
-			fmt.Println(job.JobID)
-			if job.JobID == queryJobID {
-				jobIDExists = true
-				break
-			}
-		}
-		var jobid string
-		jobid = queryJobID
+
+		jobid := queryJobID
+		_, jobIDExists := (*jobs)[jobid]
 		if !jobIDExists {
 			fmt.Println("Error", queryJobID)
 			json.NewEncoder(w).Encode("{}")
@@ -133,6 +194,7 @@ func jobInfoHandlerWrapper(jobs *map[string]Job, jobsCompleted *map[string]JobCo
 			_, present := (*jobsCompleted)[jobid]
 			if present {
 				json.NewEncoder(w).Encode((*jobsCompleted)[jobid])
+				return
 			}
 			_, failed := (*jobsFailed)[jobid]
 			if failed {
@@ -148,82 +210,15 @@ func jobInfoHandlerWrapper(jobs *map[string]Job, jobsCompleted *map[string]JobCo
 		}
 	}
 }
-func backgroundWorker(jobs *map[string]Job, jobsCompleted *map[string]JobCompleted, jobsFailed *map[string]JobFailed, stores []Store) {
-	for _, job := range *jobs {
-		var failedJob JobFailed
-		failedJob.Status = "failed"
-		failedJob.Status = job.JobID
-		for _, visit := range job.Payload.Visits {
 
-			for _, imageURL := range visit.ImageURL {
-
-				storePresent := false
-				for _, store := range stores {
-					if store.StoreID == visit.StoreID {
-						storePresent = true
-					}
-				}
-
-				if !storePresent {
-					job.Status = "failed"
-					var joberror JobError
-					joberror.StoreID = visit.StoreID
-					joberror.Error = "Store doesn't exists"
-					continue
-				}
-
-				resp, err := http.Get(imageURL)
-				if err != nil {
-					job.Status = "failed"
-					var joberror JobError
-					joberror.StoreID = visit.StoreID
-					joberror.Error = "Unable to Download an Image"
-					continue
-				}
-				defer resp.Body.Close()
-				m, _, err := image.Decode(resp.Body)
-				if err != nil {
-					job.Status = "failed"
-					continue
-				}
-				g := m.Bounds()
-				height := g.Dy()
-				width := g.Dx()
-
-				perimeter := 2 * (height + width)
-				if perimeter < 0 {
-					fmt.Println("Impossible!!")
-				}
-				pointSeconds := rand.Intn(3) + 1
-				time.Sleep((time.Second / 10) * time.Duration(pointSeconds))
-			}
-		}
-		var jobid string
-		jobid = job.JobID
-
-		if job.Status == "ongoing" {
-			job.Status = "completed"
-			var jobCompleted JobCompleted
-			jobCompleted.Status = "completed"
-			jobCompleted.JobID = job.JobID
-			(*jobsCompleted)[jobid] = jobCompleted
-		} else {
-			job.Status = "failed"
-			var jobFailed JobFailed
-			jobFailed.Status = "failed"
-			jobFailed.JobID = job.JobID
-			(*jobsFailed)[jobid] = jobFailed
-		}
-	}
-
-}
 func main() {
 	router := mux.NewRouter()
-	var stores []Store
+	var stores = make(map[string]Store)
 	var jobs = make(map[string]Job)
 	var jobsCompleted = make(map[string]JobCompleted)
 	var jobsFailed = make(map[string]JobFailed)
 
+	// loading store data
 	csvFile, err := os.Open("StoreMasterAssignment.csv")
 
 	if err != nil {
@@ -243,14 +238,14 @@ func main() {
 			StoreID:   line[2],
 		}
 		if i > 0 {
-			stores = append(stores, store)
+			stores[store.StoreID] = store
 		}
 	}
+	// store data loaded
 
 	// Route Handlers
-	router.HandleFunc("/api/submit", jobHandlerWrapper(stores, &jobs)).Methods("POST")
+	router.HandleFunc("/api/submit", jobHandlerWrapper(&stores, &jobs, &jobsCompleted, &jobsFailed)).Methods("POST")
 	router.HandleFunc("/api/status", jobInfoHandlerWrapper(&jobs, &jobsCompleted, &jobsFailed)).Methods("GET")
-	go backgroundWorker(&jobs, &jobsCompleted, &jobsFailed, stores)
 
 	log.Fatal(http.ListenAndServe(":8000", router))
 
